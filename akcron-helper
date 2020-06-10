@@ -1,0 +1,85 @@
+#!/usr/bin/pagsh.krb
+#
+# akcron-helper -- backend helper for akcron, indended to be used through
+# remctl.
+#
+# $Id$
+
+
+# There is no authentication here. We pray that remctl has taken care of
+# it for us.
+PRINC=`echo $REMUSER | /bin/cut -d "@" -f 1`
+
+# Set per-pid kerberos credentials cache
+export KRB5CCNAME="/tmp/krb5cc_akcron_$$"
+
+if [ "$PRINC" = "" ]; then
+	# Princ is null, we have a remctl problem.
+	echo "Principal is wrong. Are you running this without using remctl?"
+	exit 1
+fi
+
+
+case "$1" in
+	init)
+				# kinit to user cron using the system keytab.
+				/usr/bin/kinit -k -t /etc/krb5.keytab cron
+				# aklog to get tokens for afs user cron.
+				/usr/bin/aklog
+
+				# remove the keytab for $PRINC, if any.
+				rm -f /afs/cs/etc/akcron/${PRINC}
+
+				# Check to see if the principal $PRINC/cron exists.
+				/usr/bin/kadmin -p cron -k -t /etc/krb5.keytab -q "getprinc ${PRINC}/cron" 2>&1 | grep "Principal does not exist" > /dev/null 2>&1
+				RETVAL=$?
+
+				# If the principal $PRINC/cron doesn't exist, create it.
+				if [ "$RETVAL" = 0 ]; then
+					echo "Creating principal ${PRINC}/cron@CS.STANFORD.EDU"
+					/usr/bin/kadmin -p cron -k -t /etc/krb5.keytab -q "addprinc -randkey ${PRINC}/cron" > /dev/null 2>&1
+				fi
+
+				# Add the key for $PRINC/cron to it's own keytab in 
+				# /afs/cs/etc/akcron
+
+				echo "Creating keytab for ${PRINC}/cron@CS.STANFORD.EDU"
+
+				/usr/bin/kadmin -p cron -k -t /etc/krb5.keytab -q "ktadd -k /afs/cs/etc/akcron/${PRINC} ${PRINC}/cron" > /dev/null 2>&1
+
+				# Check to see if the AFS user $PRINC.cron exists.
+				/usr/bin/pts examine ${PRINC}.cron > /dev/null 2>&1 
+				RETVAL=$?
+
+				# If the AFS user $PRINC.cron doesn't exist, create it.
+				if [ ! "$RETVAL" = 0 ]; then
+					echo "Creating AFS user ${PRINC}.cron"
+					/usr/bin/pts createuser -name ${PRINC}.cron >/dev/null 2>&1
+				fi
+
+				;;
+	destroy)
+				# kinit to user cron using the system keytab.
+				/usr/bin/kinit -k -t /etc/krb5.keytab cron 
+				# aklog to get tokens for afs user cron.
+				/usr/bin/aklog
+			
+				# Remove the keytab for $PRINC, if it exists.
+				if [ -f /afs/cs/etc/akcron/${PRINC} ]; then
+					rm -f /afs/cs/etc/akcron/$PRINC 
+					echo "Deleting keytab for ${PRINC}/cron@CS.STANFORD.EDU"
+				else 
+					echo "Keytab for ${PRINC}/cron@CS.STANFORD.EDU doesn't exist."
+				fi
+				# We don't do a pts delete, because we don't want the UID
+				# being recycled and mixing up ACLs.
+				;;
+	*)
+				echo "Usage: akcron-helper [init|destroy]"
+				exit 1
+				;;
+esac
+
+# Drop all priviledges
+/usr/bin/unlog
+/usr/bin/kdestroy
